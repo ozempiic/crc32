@@ -112,6 +112,10 @@ void check_and_heal_section(HANDLE hProcess, Section* section) {
             BYTE* current = (BYTE*)malloc(node->data_size);
             if (!current) return;
             
+            DWORD old_protect;
+            VirtualProtectEx(hProcess, node->data_ptr, node->data_size, 
+                           PAGE_EXECUTE_READWRITE, &old_protect);
+            
             SIZE_T bytes_read;
             if (ReadProcessMemory(hProcess, node->data_ptr, current, node->data_size, &bytes_read) &&
                 bytes_read == node->data_size) {
@@ -119,10 +123,12 @@ void check_and_heal_section(HANDLE hProcess, Section* section) {
                 uint32_t current_hash = crc32(current, node->data_size);
                 if (current_hash != node->hash) {
                     SIZE_T bytes_written;
-                    DWORD old_protect;
                     
+                    SYSTEMTIME t;
+                    GetLocalTime(&t);
                     char logMessage[512];
-                    sprintf(logMessage, "[TAMPER-DETECT] Section: %s, Address: %p, Size: %zu, Original Hash: %08X, Current Hash: %08X\n",
+                    sprintf(logMessage, "[%02u:%02u:%02u.%03u] [TAMPER-DETECT] Section: %s, Address: %p, Size: %zu, Original Hash: %08X, Current Hash: %08X\n",
+                            t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
                             section->name, node->data_ptr, node->data_size, node->hash, current_hash);
                     OutputDebugStringA(logMessage);
                     printf("%s", logMessage);
@@ -133,26 +139,34 @@ void check_and_heal_section(HANDLE hProcess, Section* section) {
                                             node->data_size, &bytes_written) && 
                             bytes_written == node->data_size) {
                             
+                            node->hash = crc32(node->original_data, node->data_size);
+                            
+                            DWORD new_protect = old_protect | PAGE_GUARD;
                             VirtualProtectEx(hProcess, node->data_ptr, node->data_size, 
-                                           old_protect, &old_protect);
+                                           new_protect, &old_protect);
                             
-                            node->hash = current_hash;
-                            
-                            sprintf(logMessage, "[AUTO-HEAL] Successfully restored original content for section %s at %p\n",
+                            GetLocalTime(&t);
+                            sprintf(logMessage, "[%02u:%02u:%02u.%03u] [AUTO-HEAL] Successfully restored original content for section %s at %p\n",
+                                    t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
                                     section->name, node->data_ptr);
                             OutputDebugStringA(logMessage);
                             printf("%s", logMessage);
-                            
-                            Sleep(1000);
                         }
                     } else {
-                        sprintf(logMessage, "[ERROR] Failed to heal section %s at %p (Error: %lu)\n",
+                        GetLocalTime(&t);
+                        sprintf(logMessage, "[%02u:%02u:%02u.%03u] [ERROR] Failed to heal section %s at %p (Error: %lu)\n",
+                                t.wHour, t.wMinute, t.wSecond, t.wMilliseconds,
                                 section->name, node->data_ptr, GetLastError());
                         OutputDebugStringA(logMessage);
                         printf("%s", logMessage);
                     }
                 }
             }
+            
+            DWORD final_protect = old_protect | PAGE_GUARD;
+            VirtualProtectEx(hProcess, node->data_ptr, node->data_size, 
+                           final_protect, &old_protect);
+            
             free(current);
         } else {
             check_node(node->left);
