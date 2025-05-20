@@ -19,34 +19,25 @@ DWORD WINAPI MonitorThread(LPVOID lpParam) {
     for (size_t i = 0; i < count; i++) {
         printf("Section %zu: %s at %p (size: %zu)\n", 
                i, ctx->sections[i].name, ctx->sections[i].base, ctx->sections[i].size);
+        
+        ctx->sections[i].page_size = 4096;
+        ctx->sections[i].merkle_root = build_merkle_tree(ctx->hProcess, 
+                                                       ctx->sections[i].base, 
+                                                       ctx->sections[i].size, 
+                                                       ctx->sections[i].page_size);
+        if (ctx->sections[i].merkle_root) {
+            ctx->sections[i].crc32 = ctx->sections[i].merkle_root->hash;
+            printf("Built Merkle tree for section %s (root hash: %08X)\n", 
+                   ctx->sections[i].name, ctx->sections[i].crc32);
+        }
     }
 
-    for (size_t i = 0; i < count; i++) {
-        ctx->sections[i].crc32 = remote_crc32(ctx->hProcess, ctx->sections[i].base, ctx->sections[i].size);
-        printf("Initial CRC for section %s: %08X\n", ctx->sections[i].name, ctx->sections[i].crc32);
-    }
-
-    printf("\nMonitoring for modifications...\n");
+    printf("\nMonitoring for modifications with self-healing enabled...\n");
     while (1) {
         for (size_t i = 0; i < count; i++) {
-            uint32_t current_crc = remote_crc32(ctx->hProcess, ctx->sections[i].base, ctx->sections[i].size);
-            if (current_crc != ctx->sections[i].crc32) {
-                char logMessage[256];
-                sprintf(logMessage, "[ALERT] Section %s has been modified!\n"
-                                  "        Expected CRC: %08X\n"
-                                  "        Current CRC:  %08X\n"
-                                  "        Address:      %p\n",
-                        ctx->sections[i].name, 
-                        ctx->sections[i].crc32,
-                        current_crc,
-                        ctx->sections[i].base);
-                OutputDebugStringA(logMessage);
-                printf("\n%s\n", logMessage);
-                
-                ctx->sections[i].crc32 = current_crc;
-            }
+            check_and_heal_section(ctx->hProcess, &ctx->sections[i]);
         }
-        Sleep(100); 
+        Sleep(100);
     }
 
     return 0;
@@ -64,7 +55,12 @@ int main(int argc, char* argv[]) {
         return EXIT_FAILURE;
     }
 
-    HANDLE hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
+    HANDLE hProcess = OpenProcess(
+        PROCESS_VM_READ | 
+        PROCESS_VM_WRITE |
+        PROCESS_VM_OPERATION |
+        PROCESS_QUERY_INFORMATION, 
+        FALSE, pid);
     if (!hProcess) {
         printf("Failed to open target process (error %lu)\n", GetLastError());
         return EXIT_FAILURE;
