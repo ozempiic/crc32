@@ -56,21 +56,137 @@ uint32_t crc32(const void* data, size_t length) {
     return ~crc;
 }
 
+MerkleNode* build_merkle_tree(HANDLE hProcess, void* data, size_t size, size_t page_size) {
+    MerkleNode* node = (MerkleNode*)malloc(sizeof(MerkleNode));
+    if (!node) return NULL;
+    
+    node->left = node->right = NULL;
+    node->data_ptr = data;
+    node->data_size = size;
+    
+    if (size <= page_size) {
+        BYTE* buffer = (BYTE*)malloc(size);
+        if (!buffer) {
+            free(node);
+            return NULL;
+        }
+        
+        SIZE_T bytes_read;
+        if (!ReadProcessMemory(hProcess, data, buffer, size, &bytes_read) || bytes_read != size) {
+            free(buffer);
+            free(node);
+            return NULL;
+        }
+        
+        node->hash = crc32(buffer, size);
+        
+        node->original_data = buffer;
+        return node;
+    }
+    
+    size_t half_size = size / 2;
+    node->left = build_merkle_tree(hProcess, data, half_size, page_size);
+    node->right = build_merkle_tree(hProcess, (BYTE*)data + half_size, size - half_size, page_size);
+    
+    uint32_t combined[2] = {node->left->hash, node->right->hash};
+    node->hash = crc32(combined, sizeof(combined));
+    node->original_data = NULL;  
+    
+    return node;
+}
+
+void update_merkle_path(MerkleNode* node) {
+    if (!node || (!node->left && !node->right)) return;
+    
+    uint32_t combined[2] = {node->left->hash, node->right->hash};
+    node->hash = crc32(combined, sizeof(combined));
+}
+
+void check_and_heal_section(HANDLE hProcess, Section* section) {
+    if (!section->merkle_root) return;
+    
+    void check_node(MerkleNode* node) {
+        if (!node) return;
+        
+        if (!node->left && !node->right) {  
+            BYTE* current = (BYTE*)malloc(node->data_size);
+            if (!current) return;
+            
+            SIZE_T bytes_read;
+            if (ReadProcessMemory(hProcess, node->data_ptr, current, node->data_size, &bytes_read) &&
+                bytes_read == node->data_size) {
+                
+                uint32_t current_hash = crc32(current, node->data_size);
+                if (current_hash != node->hash) {
+                    SIZE_T bytes_written;
+                    DWORD old_protect;
+                    
+                    char logMessage[512];
+                    sprintf(logMessage, "[TAMPER-DETECT] Section: %s, Address: %p, Size: %zu, Original Hash: %08X, Current Hash: %08X\n",
+                            section->name, node->data_ptr, node->data_size, node->hash, current_hash);
+                    OutputDebugStringA(logMessage);
+                    printf("%s", logMessage);
+                    
+                    if (VirtualProtectEx(hProcess, node->data_ptr, node->data_size, 
+                                       PAGE_EXECUTE_READWRITE, &old_protect)) {
+                        if (WriteProcessMemory(hProcess, node->data_ptr, node->original_data,
+                                            node->data_size, &bytes_written) && 
+                            bytes_written == node->data_size) {
+                            
+                            VirtualProtectEx(hProcess, node->data_ptr, node->data_size, 
+                                           old_protect, &old_protect);
+                            
+                            node->hash = current_hash;
+                            
+                            sprintf(logMessage, "[AUTO-HEAL] Successfully restored original content for section %s at %p\n",
+                                    section->name, node->data_ptr);
+                            OutputDebugStringA(logMessage);
+                            printf("%s", logMessage);
+                            
+                            Sleep(1000);
+                        }
+                    } else {
+                        sprintf(logMessage, "[ERROR] Failed to heal section %s at %p (Error: %lu)\n",
+                                section->name, node->data_ptr, GetLastError());
+                        OutputDebugStringA(logMessage);
+                        printf("%s", logMessage);
+                    }
+                }
+            }
+            free(current);
+        } else {
+            check_node(node->left);
+            check_node(node->right);
+            update_merkle_path(node);
+        }
+    }
+    
+    check_node(section->merkle_root);
+}
+
+void free_merkle_tree(MerkleNode* root) {
+    if (!root) return;
+    free_merkle_tree(root->left);
+    free_merkle_tree(root->right);
+    free(root->original_data);
+    free(root);
+}
+
 void initialize_checksums(Section* sections, size_t count) {
+    const size_t PAGE_SIZE = 4096;  
     for (size_t i = 0; i < count; i++) {
-        sections[i].crc32 = crc32(sections[i].base, sections[i].size);
+        sections[i].page_size = PAGE_SIZE;
+        sections[i].merkle_root = build_merkle_tree(GetCurrentProcess(), 
+                                                  sections[i].base, 
+                                                  sections[i].size, 
+                                                  PAGE_SIZE);
+        sections[i].crc32 = sections[i].merkle_root ? sections[i].merkle_root->hash : 0;
     }
 }
 
 void check_integrity(const Section* sections, size_t count) {
     for (size_t i = 0; i < count; i++) {
-        uint32_t current_crc = crc32(sections[i].base, sections[i].size);
-        if (current_crc != sections[i].crc32) {
-            char logMessage[256];
-            sprintf(logMessage, "[ALERT] Section %s has been modified! Expected CRC: %08X, Current CRC: %08X\n",
-                    sections[i].name, sections[i].crc32, current_crc);
-            OutputDebugStringA(logMessage);
-        }
+        check_and_heal_section(GetCurrentProcess(), (Section*)&sections[i]);
     }
 }
 
