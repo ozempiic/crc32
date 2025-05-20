@@ -12,7 +12,6 @@
 #define MAX_SECTIONS 64
 #define BUFFER_SIZE 4096 
 
-// Forward declare MerkleNode for use in Section struct
 struct MerkleNode;
 
 typedef struct {
@@ -20,21 +19,20 @@ typedef struct {
     void* base;        
     size_t size;       
     uint32_t crc32;    
-    struct MerkleNode* merkle_root;  // Root of the Merkle tree for this section
-    size_t page_size;         // Size of each page (typically 4KB)
-    BYTE* shadow_copy;        // Shadow copy for self-healing
+    struct MerkleNode* merkle_root;  
+    size_t page_size;         
+    BYTE* shadow_copy;       
 } Section;
 
 typedef struct MerkleNode {
     uint32_t hash;
     struct MerkleNode* left;
     struct MerkleNode* right;
-    void* data_ptr;        // Points to the actual page data
-    size_t data_size;      // Size of the data this node represents
-    BYTE* original_data;   // For self-healing: stores original content
+    void* data_ptr;       
+    size_t data_size;     
+    BYTE* original_data;   
 } MerkleNode;
 
-// Function declarations
 MerkleNode* build_merkle_tree(HANDLE hProcess, void* data, size_t size, size_t page_size);
 void update_merkle_path(MerkleNode* node);
 void check_and_heal_section(HANDLE hProcess, Section* section);
