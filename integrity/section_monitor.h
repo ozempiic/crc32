@@ -37,7 +37,6 @@ MerkleNode* build_merkle_tree(HANDLE hProcess, void* data, size_t size, size_t p
 void update_merkle_path(MerkleNode* node);
 void check_and_heal_section(HANDLE hProcess, Section* section);
 void free_merkle_tree(MerkleNode* root);
-
 size_t get_non_writable_sections(Section* sections, size_t max_sections);
 uint32_t crc32(const void* data, size_t length);
 void initialize_checksums(Section* sections, size_t count);
